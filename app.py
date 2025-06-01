@@ -3,7 +3,7 @@ from flask import Flask, request, jsonify
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
-from langchain_huggingface import HuggingFaceEndpoint
+import requests
 
 app = Flask(__name__)
 
@@ -11,7 +11,10 @@ DB_FAISS_PATH = "vectorstore/db_faiss"
 HF_TOKEN = os.environ.get("HF_TOKEN")
 HUGGINGFACE_REPO_ID = "mistralai/Mistral-7B-Instruct-v0.3"
 
+# Embedding model for FAISS
 embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+# Load FAISS vectorstore
 vectorstore = FAISS.load_local(DB_FAISS_PATH, embedding_model, allow_dangerous_deserialization=True)
 
 chat_history = []
@@ -33,16 +36,17 @@ Start the answer directly. No small talk please.
 def set_custom_prompt(template):
     return PromptTemplate(template=template, input_variables=["history", "context", "question"])
 
-def load_llm(huggingface_repo_id, HF_TOKEN):
-    llm = HuggingFaceEndpoint(
-        repo_id=huggingface_repo_id,
-        huggingfacehub_api_token=HF_TOKEN,
-        temperature=0.5,
-        max_new_tokens=512
-    )
-    return llm
+def call_llm(prompt: str):
+    API_URL = f"https://api-inference.huggingface.co/models/{HUGGINGFACE_REPO_ID}"
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    payload = {"inputs": prompt}
 
-llm = load_llm(HUGGINGFACE_REPO_ID, HF_TOKEN)
+    response = requests.post(API_URL, headers=headers, json=payload)
+    response.raise_for_status()
+    result = response.json()
+    # result format example: [{"generated_text": "..."}]
+    return result[0]['generated_text'] if result else "No response from LLM"
+
 prompt_template = set_custom_prompt(CUSTOM_PROMPT_TEMPLATE)
 
 @app.route("/ask", methods=["POST"])
@@ -69,8 +73,8 @@ def ask_question():
             question=query
         )
 
-        # Call LLM with the full prompt text
-        response = llm(prompt_text)
+        # Call LLM with the full prompt text via HuggingFace Inference API
+        response = call_llm(prompt_text)
 
         # Save current Q&A to history
         chat_history.append((query, response))
@@ -78,7 +82,6 @@ def ask_question():
         return jsonify({
             "response": response,
             "chat_history": chat_history[-5:]
-            # "sources": [doc.page_content[:300] for doc in docs]
         })
 
     except Exception as e:
@@ -89,5 +92,4 @@ def home():
     return "✅ PDF Chatbot API with Chat History is running!"
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(debug=True)
